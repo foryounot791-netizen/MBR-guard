@@ -3,140 +3,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <winioctl.h>
-#include <tlhelp32.h>
+#include <mmsystem.h>  // ← Tambahan untuk suara
+
 #pragma comment(lib, "kernel32.lib")
-#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "winmm.lib")  // ← Tambahan untuk suara
 
 #define MBR_SIZE 512
-#define NAMA_FILE_SALINAN L"Windows-MBR-Save.bin"
-#define JUMLAH_LOKASI 3
+#define NAMA_FILE_SALINAN L"MBR-ASLI.BIN"
 
 // ==============================================
-// DAFTAR PROSES SISTEM YANG TIDAK BOLEH DIMATIKAN
-// ==============================================
-const WCHAR* SISTEM_DILINDUNGI[] = {
-    L"system", L"smss.exe", L"csrss.exe", L"wininit.exe",
-    L"services.exe", L"lsass.exe", L"svchost.exe", L"winlogon.exe",
-    L"explorer.exe", L"dwm.exe", L"conhost.exe", L"wmi.exe", NULL
-};
-
-// ==============================================
-// FUNGSI: LINDUNGI PROSES SENDIRI AGAR SULIT DIMATIKAN VIRUS
-// ==============================================
-void lindungiProsesSendiri() {
-    HANDLE hToken;
-    TOKEN_PRIVILEGES tp;
-    LUID luid;
-    
-    // Ambil hak akses tingkat SISTEM
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-        LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid);
-        tp.PrivilegeCount = 1;
-        tp.Privileges[0].Luid = luid;
-        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-        AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
-        CloseHandle(hToken);
-    }
-    
-    // Atur prioritas TERTINGGI → virus tidak bisa menurunkan kinerja
-    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
-    
-    // Tandai sebagai proses KRITIS → tidak bisa dipaksa dimatikan sembarangan
-    HANDLE hProc = GetCurrentProcess();
-    SetProcessInformation(hProc, ProcessProtectionLevelInfo, 
-        &(PROCESS_PROTECTION_LEVEL_INFORMATION{3}), 
-        sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION));
-}
-
-// ==============================================
-// FUNGSI: CEK APAKAH PROSES SISTEM
-// ==============================================
-int adalahProsesSistem(const WCHAR* nama) {
-    for (int i = 0; SISTEM_DILINDUNGI[i] != NULL; i++) {
-        if (_wcsicmp(nama, SISTEM_DILINDUNGI[i]) == 0) return 1;
-    }
-    return 0;
-}
-
-// ==============================================
-// FUNGSI: ISOLASI PROGRAM BUKAN SISTEM (TANPA MEMATIKAN PAKSA!)
-// ==============================================
-void isolasiProgramPengganggu() {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) return;
-    
-    PROCESSENTRY32W pe32;
-    pe32.dwSize = sizeof(PROCESSENTRY32W);
-    DWORD PID_SENDIRI = GetCurrentProcessId();
-    
-    if (Process32FirstW(hSnapshot, &pe32)) {
-        do {
-            // Jangan sentuh diri sendiri & jangan sentuh sistem
-            if (pe32.th32ProcessID != PID_SENDIRI && !adalahProsesSistem(pe32.szExeFile)) {
-                // ⚠️ TIDAK MEMATIKAN PAKSA! Kita hanya HAPUS HAK TULIS/MODIFIKASI saja
-                // Tujuannya: virus TIDAK BISA menulis ke MBR lagi, tapi TIDAK tahu dia sedang "diblokir"
-                HANDLE hProses = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_WRITE, FALSE, pe32.th32ProcessID);
-                if (hProses != NULL) {
-                    // Cabut hak akses proses tersebut → tidak bisa mengubah apa-apa lagi
-                    HANDLE hToken;
-                    if (OpenProcessToken(hProses, TOKEN_ADJUST_PRIVILEGES, &hToken)) {
-                        DisablePrivilegeToken(hToken, SE_LOAD_DRIVER_NAME, TRUE);
-                        DisablePrivilegeToken(hToken, SE_DEBUG_NAME, TRUE);
-                        CloseHandle(hToken);
-                    }
-                    CloseHandle(hProses);
-                }
-            }
-        } while (Process32NextW(hSnapshot, &pe32));
-    }
-    CloseHandle(hSnapshot);
-}
-
-// ==============================================
-// FUNGSI: DAPATKAN LOKASI FOLDER
-// ==============================================
-typedef struct { WCHAR jalurFolder[MAX_PATH]; } LokasiCadangan;
-
-void dapatkanLokasiFolder(int tipe, WCHAR* jalur, size_t ukuran) {
-    switch(tipe) {
-        case 1: GetWindowsDirectoryW(jalur, (DWORD)ukuran); break;
-        case 2:
-            GetEnvironmentVariableW(L"LOCALAPPDATA", jalur, (DWORD)ukuran);
-            wcscat_s(jalur, ukuran, L"\\Backup");
-            CreateDirectoryW(jalur, NULL);
-            break;
-        case 3:
-            GetWindowsDirectoryW(jalur, (DWORD)ukuran);
-            wcscat_s(jalur, ukuran, L"\\Temp");
-            break;
-    }
-}
-
-void jalurSalinan(LokasiCadangan* daftarLokasi) {
-    for(int i=0; i<JUMLAH_LOKASI; i++) {
-        dapatkanLokasiFolder(i+1, daftarLokasi[i].jalurFolder, MAX_PATH);
-        wcscat_s(daftarLokasi[i].jalurFolder, MAX_PATH, L"\\");
-        wcscat_s(daftarLokasi[i].jalurFolder, MAX_PATH, NAMA_FILE_SALINAN);
-    }
-}
-
-// ==============================================
-// FUNGSI: SUARA NOTIFIKASI
+// FUNGSI: PUTAR SUARA NOTIFIKASI
 // ==============================================
 void putarSuaraNotifikasi() {
     WCHAR jalurSuara[MAX_PATH];
     GetWindowsDirectoryW(jalurSuara, MAX_PATH);
     wcscat_s(jalurSuara, MAX_PATH, L"\\Media\\Windows Notify.wav");
-    PlaySoundW(jalurSuara, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP);
+    PlaySoundW(jalurSuara, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
 }
 
 // ==============================================
-// FUNGSI: TAMPILKAN PESAN
+// TAMPILKAN PESAN KE PENGGUNA
 // ==============================================
 void pesan(const wchar_t* teks) {
+    putarSuaraNotifikasi();  // ← Bunyikan suara setiap kali muncul pesan!
     MessageBoxW(NULL, teks, L"MBR Guard", MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
+// ==============================================
+// PERINGATAN AWAL SEBELUM BERJALAN
+// ==============================================
 void peringatanAwal() {
     pesan(
         L"WARNING!!\n"
@@ -146,97 +41,112 @@ void peringatanAwal() {
 }
 
 // ==============================================
-// FUNGSI: BACA/TULIS MBR
+// DAPATKAN FOLDER TEMPAT PROGRAM BERADA
+// ==============================================
+void dapatkanFolderSendiri(WCHAR* jalur, DWORD ukuran) {
+    GetModuleFileNameW(NULL, jalur, ukuran);
+    WCHAR* pemisah = wcsrchr(jalur, L'\\');
+    if (pemisah != NULL) {
+        *(pemisah + 1) = L'\0';
+    }
+}
+
+// ==============================================
+// BACA MBR DARI HARDDISK FISIK
 // ==============================================
 int bacaMBR(BYTE* buffer) {
     HANDLE perangkat = CreateFileW(L"\\\\.\\PhysicalDrive0", 
         GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 
         NULL, OPEN_EXISTING, 0, NULL);
+    
     if (perangkat == INVALID_HANDLE_VALUE) return 0;
+    
     DWORD dibaca;
     SetFilePointer(perangkat, 0, NULL, FILE_BEGIN);
     BOOL berhasil = ReadFile(perangkat, buffer, MBR_SIZE, &dibaca, NULL);
     CloseHandle(perangkat);
+    
     return (berhasil && dibaca == MBR_SIZE);
 }
 
+// ==============================================
+// TULIS KEMBALI MBR KE HARDDISK
+// ==============================================
 int tulisMBR(BYTE* buffer) {
     HANDLE perangkat = CreateFileW(L"\\\\.\\PhysicalDrive0", 
         GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 
         NULL, OPEN_EXISTING, 0, NULL);
+    
     if (perangkat == INVALID_HANDLE_VALUE) return 0;
+    
     DWORD ditulis;
     SetFilePointer(perangkat, 0, NULL, FILE_BEGIN);
     BOOL berhasil = WriteFile(perangkat, buffer, MBR_SIZE, &ditulis, NULL);
     CloseHandle(perangkat);
+    
     return (berhasil && ditulis == MBR_SIZE);
 }
 
 // ==============================================
-// FUNGSI: SIMPAN/MUAT CADANGAN
+// SIMPAN SALINAN MBR ASLI DI FOLDER INI
 // ==============================================
-int simpanSalinanSemua(LokasiCadangan* daftarLokasi, BYTE* buffer) {
-    int berhasil = 0;
-    for(int i=0; i<JUMLAH_LOKASI; i++) {
-        HANDLE berkas = CreateFileW(daftarLokasi[i].jalurFolder, GENERIC_WRITE, 
-            0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM, NULL);
-        if (berkas != INVALID_HANDLE_VALUE) {
-            DWORD ditulis;
-            if (WriteFile(berkas, buffer, MBR_SIZE, &ditulis, NULL) && ditulis == MBR_SIZE)
-                berhasil++;
-            CloseHandle(berkas);
-        }
-    }
-    return (berhasil >= 1) ? 1 : 0;
-}
-
-int muatSalinanSemua(LokasiCadangan* daftarLokasi, BYTE* buffer) {
-    for(int i=0; i<JUMLAH_LOKASI; i++) {
-        HANDLE berkas = CreateFileW(daftarLokasi[i].jalurFolder, GENERIC_READ, 
-            0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM, NULL);
-        if (berkas != INVALID_HANDLE_VALUE) {
-            DWORD dibaca;
-            if (ReadFile(berkas, buffer, MBR_SIZE, &dibaca, NULL) && dibaca == MBR_SIZE) {
-                CloseHandle(berkas);
-                return 1;
-            }
-            CloseHandle(berkas);
-        }
-    }
-    return 0;
+int simpanSalinan(BYTE* buffer) {
+    WCHAR jalurPenuh[MAX_PATH];
+    dapatkanFolderSendiri(jalurPenuh, MAX_PATH);
+    wcscat_s(jalurPenuh, MAX_PATH, NAMA_FILE_SALINAN);
+    
+    HANDLE berkas = CreateFileW(jalurPenuh, GENERIC_WRITE, 
+        0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    
+    if (berkas == INVALID_HANDLE_VALUE) return 0;
+    
+    DWORD ditulis;
+    BOOL berhasil = WriteFile(berkas, buffer, MBR_SIZE, &ditulis, NULL);
+    CloseHandle(berkas);
+    
+    return (berhasil && ditulis == MBR_SIZE);
 }
 
 // ==============================================
-// FUNGSI: CEK KORUP
+// MUAT SALINAN MBR ASLI DARI FILE DI FOLDER INI
 // ==============================================
-int cekCadanganKorup(BYTE* buffer) {
-    return (buffer[510] != 0x55 || buffer[511] != 0xAA) ? 1 : 0;
+int muatSalinan(BYTE* buffer) {
+    WCHAR jalurPenuh[MAX_PATH];
+    dapatkanFolderSendiri(jalurPenuh, MAX_PATH);
+    wcscat_s(jalurPenuh, MAX_PATH, NAMA_FILE_SALINAN);
+    
+    HANDLE berkas = CreateFileW(jalurPenuh, GENERIC_READ, 
+        0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    
+    if (berkas == INVALID_HANDLE_VALUE) return 0;
+    
+    DWORD dibaca;
+    BOOL berhasil = ReadFile(berkas, buffer, MBR_SIZE, &dibaca, NULL);
+    CloseHandle(berkas);
+    
+    return (berhasil && dibaca == MBR_SIZE);
 }
 
 // ==============================================
-// FUNGSI: KILL DIRI SENDIRI
+// CEK APAKAH MBR MASIH VALID (ADA TANDA 55 AA DI AKHIR)
 // ==============================================
-void killDirisendiri() {
-    HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, GetCurrentProcessId());
-    if (hProcess != NULL) { TerminateProcess(hProcess, 0); CloseHandle(hProcess); }
+int mbrValid(BYTE* buffer) {
+    return (buffer[510] == 0x55 && buffer[511] == 0xAA);
 }
 
 // ==============================================
-// FUNGSI: BANDINGKAN & CEK PERUBAHAN
+// BANDINGKAN APAKAH ISI MBR SAMA PERSIS
 // ==============================================
-int samaMBR(BYTE* a, BYTE* b) { return (memcmp(a, b, MBR_SIZE) == 0); }
+int samaMBR(BYTE* a, BYTE* b) {
+    return (memcmp(a, b, MBR_SIZE) == 0);
+}
 
+// ==============================================
+// CEK APAKAH PERUBAHAN DARI WINDOWS SENDIRI (AMAN)
+// ==============================================
 int perubahanDariWindows(BYTE* asli, BYTE* sekarang) {
-    if (sekarang[510] != 0x55 || sekarang[511] != 0xAA) return 0;
-    return (memcmp(asli, sekarang, 446) == 0) ? 1 : 0;
-}
-
-// ==============================================
-// FUNGSI: SEMBUNYIKAN JENDELA
-// ==============================================
-void jadikanLatarBelakang() {
-    HWND jendela = GetForegroundWindow();
-    if (jendela) ShowWindow(jendela, SW_HIDE);
+    if (!mbrValid(sekarang)) return 0;
+    return (memcmp(asli, sekarang, 446) == 0);
 }
 
 // ==============================================
@@ -245,93 +155,74 @@ void jadikanLatarBelakang() {
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR cmdLine, int nCmdShow) {
     BYTE salinanAsli[MBR_SIZE];
     BYTE mbrSekarang[MBR_SIZE];
-    LokasiCadangan daftarLokasi[JUMLAH_LOKASI];
-    jalurSalinan(daftarLokasi);
     
-    // ==============================================
-    // LINDUNGI DIRI SENDIRI DULU
-    // ==============================================
-    lindungiProsesSendiri();
-    
-    // ==============================================
-    // PERINGATAN AWAL & SEMBUNYIKAN
-    // ==============================================
+    // TAMPILKAN PERINGATAN AWAL
     peringatanAwal();
-    jadikanLatarBelakang();
     
-    // ==============================================
-    // MUAT / BUAT CADANGAN PERTAMA
-    // ==============================================
-    if (!muatSalinanSemua(daftarLokasi, salinanAsli)) {
+    // MUAT CADANGAN ATAU BUAT BARU
+    if (!muatSalinan(salinanAsli)) {
         if (!bacaMBR(salinanAsli)) {
-            pesan(L"Failed to read MBR! Run as Administrator!");
-            killDirisendiri(); return 1;
+            pesan(L"FAILED to read MBR!\nRun this program as ADMINISTRATOR!");
+            return 1;
         }
-        if (!simpanSalinanSemua(daftarLokasi, salinanAsli)) {
-            pesan(L"Failed to save backup! Run as Administrator!");
-            killDirisendiri(); return 1;
+        if (!simpanSalinan(salinanAsli)) {
+            pesan(L"FAILED to save backup!\nRun this program as ADMINISTRATOR!");
+            return 1;
         }
+        pesan(L"✅ Backup MBR saved successfully!\nFile saved in same folder as this program.\nNow watching MBR every 5 seconds...");
     }
     
-    if (cekCadanganKorup(salinanAsli)) {
-        pesan(L"We dont have a choice");
-        killDirisendiri(); return 1;
+    // VALIDASI SALINAN YANG DIMUAT
+    if (!mbrValid(salinanAsli)) {
+        pesan(L"⚠️ Backup file is corrupted!\nDelete MBR-ASLI.BIN and run this program again.");
+        return 1;
     }
     
-    // ==============================================
-    // LOOP PENGAWASAN
-    // ==============================================
+    // PENGAWASAN TERUS-MENERUS SETIAP 5 DETIK
     while (1) {
         if (!bacaMBR(mbrSekarang)) break;
         
-        if (cekCadanganKorup(mbrSekarang)) {
-            pesan(L"We dont have a choice");
-            killDirisendiri(); return 1;
+        // ⚠️ TANDA MBR RUSAK = SERANGAN TERJADI!
+        if (!mbrValid(mbrSekarang)) {
+            pesan(L"⚠️ ALERT: MBR SIGNATURE DESTROYED!\nRestoring original MBR NOW...");
+            
+            // KOSONGKAN DULU → HAPUS JEJAK VIRUS
+            BYTE kosong[MBR_SIZE] = {0};
+            tulisMBR(kosong);
+            Sleep(300);
+            
+            // PULIHKAN MBR ASLI DALAM 0,3 DETIK!
+            tulisMBR(salinanAsli);
+            
+            pesan(L"✅ MBR RESTORED SUCCESSFULLY!\n\nWindows Defender will catch the virus.\nPlease run FULL SCAN now!");
+            break;
         }
         
+        // ⚠️ ISI MBR BERUBAH DARI ASLINYA
         if (!samaMBR(salinanAsli, mbrSekarang)) {
             if (perubahanDariWindows(salinanAsli, mbrSekarang)) {
+                // Perubahan aman dari Windows → perbarui salinan
                 memcpy(salinanAsli, mbrSekarang, MBR_SIZE);
-                simpanSalinanSemua(daftarLokasi, salinanAsli);
+                simpanSalinan(salinanAsli);
                 Sleep(5000);
                 continue;
             }
             
-            // ==============================================
-            // ⚠️ TERDETEKSI SERANGAN → PULIHKAN DULU!
-            // ==============================================
-            pesan(L"ALERT: MBR has been modified! Restoring original...");
-            Sleep(1500);
+            // ⚠️ TERDETEKSI SERANGAN VIRUS! PULIHKAN SEKARANG JUGA!
+            pesan(L"⚠️ ALERT: MBR HAS BEEN MODIFIED!\nRestoring original MBR...");
+            Sleep(1000);
             
-            // 🔴 LANGKAH PENTING: PULIHKAN MBR DULU SEBELUM VIRUS SEMPAT BERBALAS!
+            // KOSONGKAN → PULIHKAN → SELESAI!
             BYTE kosong[MBR_SIZE] = {0};
-            tulisMBR(kosong);   // Kosongkan MBR yang rusak → HAPUS JEJAK VIRUS
+            tulisMBR(kosong);
             Sleep(300);
-            tulisMBR(salinanAsli); // Tulis MBR ASLI → DALAM 0,3 DETIK!
+            tulisMBR(salinanAsli);
             
-            // 🛡️ BARU KEMUDIAN: Cabut hak akses virus (TANPA mematikan paksa!)
-            pesan(L"Securing system...");
-            isolasiProgramPengganggu();
-            
-            // 🔊 SUARA NOTIFIKASI
-            putarSuaraNotifikasi();
-            
-            pesan(L"MBR Guard: Original MBR has been restored successfully!");
-            Sleep(2000);
-            
-            pesan(L"Computer will restart in 10 seconds...");
-            system("shutdown /r /t 10 /c \"MBR modified by malicious program has been restored\"");
+            pesan(L"✅ MBR RESTORED SUCCESSFULLY!\n\nWindows Defender will catch the virus.\nPlease run FULL SCAN now!");
             break;
         }
         
-        // CEK ULANG CADANGAN SETIAP 5 DETIK
-        BYTE cekBuffer[MBR_SIZE];
-        if (!muatSalinanSemua(daftarLokasi, cekBuffer) || cekCadanganKorup(cekBuffer)) {
-            pesan(L"We dont have a choice");
-            killDirisendiri(); return 1;
-        }
-        memcpy(salinanAsli, cekBuffer, MBR_SIZE);
-        
+        // TUNGGU 5 DETIK LAGI
         Sleep(5000);
     }
     return 0;
